@@ -28,15 +28,15 @@ public class ServerController {
 	@Autowired
 	private ObjectMapper mapper;
 
-	@PostMapping(path="/cleanup", produces=MediaType.APPLICATION_JSON_VALUE)
+	@PostMapping(path="/killServers", produces=MediaType.APPLICATION_JSON_VALUE)
 	@ResponseBody
 	public ResponseEntity<Object> cleanup() {
-		LOG.info(">>>>controller cleanup is called");
+		LOG.info(">>>>controller killServers is called");
 		
 		ObjectNode objectNode = mapper.createObjectNode();
 		
 		try {
-			serverService.cleanup();
+			serverService.killServers();
 			objectNode.put("returnCode", "0000");
 		} catch (Exception e) {
 			String errMsg = ExceptionUtils.getMessage(e);

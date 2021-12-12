@@ -52,12 +52,6 @@ public class ServerService {
 	@Value("${partycontact.rest.port}")
 	private String partycontactRestPort;
 	
-	public void cleanup() throws Exception {
-		LOG.info(">>>>> Kill servers");
-		killServers();
-		LOG.info(">>>>> [OK] no servers is runnig or servers are killed successfully");
-
-	}
 	public void startRestServer(String restServer) throws Exception {
 		int kafkaRestPortNum = Integer.valueOf(kafkaRestPort);
 		int logminerRestPortNum = Integer.valueOf(logminerRestPort);
@@ -77,6 +71,8 @@ public class ServerService {
 		} else if (StringUtils.equalsIgnoreCase("partycontact-rest", restServer)) {
 			startRestServer(partycontactRestHome, partycontactRestStartScript);
 			port = partycontactRestPortNum;
+		} else {
+			throw new Exception("restServer=" + restServer + " not recognixed");
 		}
 		
 		
@@ -87,10 +83,27 @@ public class ServerService {
 		LOG.info(">>>>> startRestServer port={} Done!!!, ", port);
 	}
 	public void stopRestServer(String restServer) throws Exception {
+		int kafkaRestPortNum = Integer.valueOf(kafkaRestPort);
+		int logminerRestPortNum = Integer.valueOf(logminerRestPort);
+		int healthRestPortNum = Integer.valueOf(healthRestPort);
+		int partycontactRestPortNum = Integer.valueOf(partycontactRestPort);
+		
+		int port = 0;
 		if (StringUtils.equalsIgnoreCase("kafka-rest", restServer)) {
-			killProcess(9101);
+			port = kafkaRestPortNum;
+		} else if (StringUtils.equalsIgnoreCase("logminer-rest", restServer)) {
+			port = logminerRestPortNum;
+		} else if (StringUtils.equalsIgnoreCase("health-rest", restServer)) {
+			port = healthRestPortNum;
+		} else if (StringUtils.equalsIgnoreCase("partycontact-rest", restServer)) {
+			port = partycontactRestPortNum;
+		}else {
+			throw new Exception("restServer=" + restServer + " not recognixed");
 		}
-		while (checkPortListening(9101)) {
+		
+		killProcess(port);
+		
+		while (checkPortListening(port)) {
 			Thread.sleep(1000);
 			LOG.info(">>>> Sleep for 1 second");;
 		}
@@ -149,7 +162,7 @@ public class ServerService {
 		}
 
 	}
-	private void killServers() throws Exception {
+	public void killServers() throws Exception {
 		int kafkaRestPortNum = Integer.valueOf(kafkaRestPort);
 		int logminerRestPortNum = Integer.valueOf(logminerRestPort);
 		int healthRestPortNum = Integer.valueOf(healthRestPort);
