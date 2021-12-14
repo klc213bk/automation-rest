@@ -10,7 +10,7 @@ echo ">>>>>>>>>>> STOPPING HEALTH-RES SERVICEST"
 curl -X POST http://localhost:9103/health/stopConsumerCheck
 echo "         [OK] STOP CONSUMER CHECK"
 
-curl -X POST http://localhost:9103/health/stoptHealthConsumer
+curl -X POST http://localhost:9103/health/stopHealthConsumer
 echo "         [OK] STOP HEALTH CONSUMER"
 
 curl -X POST http://localhost:9103/health/stopHeartbeat

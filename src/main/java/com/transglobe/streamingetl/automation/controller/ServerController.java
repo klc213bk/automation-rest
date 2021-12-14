@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -95,6 +96,54 @@ public class ServerController {
 		}
 		
 		LOG.info(">>>>controller stopRestServer finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	@PostMapping(path="/startRestartCheck", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> startRestartCheck() {
+		LOG.info(">>>>controller startRestartCheck is called");
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			serverService.startRestartCheck();
+			objectNode.put("returnCode", "0000");
+			
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stacktrace={}",errMsg,stackTrace);
+		}
+		
+		LOG.info(">>>>controller startRestartCheck finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	@PostMapping(path="/stopRestartCheck", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> stopRestartCheck() {
+		LOG.info(">>>>controller stopRestartCheck is called");
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			serverService.stopRestartCheck();
+			objectNode.put("returnCode", "0000");
+			
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stacktrace={}",errMsg,stackTrace);
+		}
+		
+		LOG.info(">>>>controller stopRestartCheck finished ");
 		
 		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
 	}

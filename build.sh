@@ -2,7 +2,6 @@
 
 set -e
 
-echo "start to build logminer-rest"
+echo "start to build automation-rest"
 mvn clean package
-
 

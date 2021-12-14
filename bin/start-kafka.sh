@@ -11,7 +11,7 @@ echo "         [OK] START ZOOKEEPER SERVER"
 curl -X POST http://localhost:9101/kafka/startKafka
 echo "         [OK] START KAFKA SERVER"
 
-
+sleep 15
 
 echo " [OK] START-KAFKA PROCESS FINISHED."
 

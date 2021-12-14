@@ -3,19 +3,37 @@ package com.transglobe.streamingetl.automation.service;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.sql.CallableStatement;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.apache.commons.dbcp2.BasicDataSource;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.builder.ToStringBuilder;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.transglobe.streamingetl.automation.util.HttpUtils;
+
+
 @Service
 public class ServerService {
 	static final Logger LOG = LoggerFactory.getLogger(ServerService.class);
 
-	
 	@Value("${kafka.rest.home}")
 	private String kafkaRestHome;
 	
@@ -51,6 +69,13 @@ public class ServerService {
 	
 	@Value("${partycontact.rest.port}")
 	private String partycontactRestPort;
+
+	@Value("${sever.restart.check.url}")
+	private String serverRestartCheckUrl;
+	
+	private ScheduledExecutorService scheduledRestartingCheckExecutor;
+	private ScheduledFuture<?> scheduledRestartingCheck;
+
 	
 	public void startRestServer(String restServer) throws Exception {
 		int kafkaRestPortNum = Integer.valueOf(kafkaRestPort);
@@ -75,12 +100,12 @@ public class ServerService {
 			throw new Exception("restServer=" + restServer + " not recognixed");
 		}
 		
-		
 		while (!checkPortListening(port)) {
 			Thread.sleep(1000);
 			LOG.info(">>>> Sleep for 1 second");;
 		}
-		LOG.info(">>>>> startRestServer port={} Done!!!, ", port);
+		
+		LOG.info(">>>>> startRestServer Done!!! ");
 	}
 	public void stopRestServer(String restServer) throws Exception {
 		int kafkaRestPortNum = Integer.valueOf(kafkaRestPort);
@@ -103,13 +128,10 @@ public class ServerService {
 		
 		killProcess(port);
 		
-		while (checkPortListening(port)) {
-			Thread.sleep(1000);
-			LOG.info(">>>> Sleep for 1 second");;
-		}
+	
 		LOG.info(">>>>> stopRestServer Done!!!");
 	}
-	public boolean startRestServer(String path, String script) throws Exception {
+	public void startRestServer(String path, String script) throws Exception {
 		LOG.info(">>>>>>>>>>>> checkstartRestServer, {}, {}", path, script);
 		BufferedReader reader = null;
 		try {
@@ -149,13 +171,7 @@ public class ServerService {
 				LOG.error(">>> startRestServer Error!!!  exitcode={}", exitVal);
 
 			}
-			
-			
-//			while (!running.get()) {
-//				LOG.info(">>>>>>WAITING 1 sec FOR FINISH");
-//				Thread.sleep(10000);
-//			}
-			return running.get();
+
 
 		} finally {
 			if (reader != null) reader.close();
@@ -175,11 +191,6 @@ public class ServerService {
 		if (listening) {
 			killProcess(kafkaRestPortNum);
 
-			// check 
-			listening = checkPortListening(kafkaRestPortNum);
-			if (listening) {
-				throw new Exception("Port:" + kafkaRestPortNum + " cannot be killed.!!!");
-			}
 		}
 
 		// kill process of kafka-rest
@@ -187,11 +198,7 @@ public class ServerService {
 		LOG.info(">>>>>>>port {} is listening:{}", logminerRestPortNum, listening);
 		if (listening) {
 			killProcess(logminerRestPortNum);
-			// check 
-			listening = checkPortListening(logminerRestPortNum);
-			if (listening) {
-				throw new Exception("Port:" + logminerRestPortNum + " cannot be killed.!!!");
-			}
+			
 		}
 
 		// kill process of kafka-rest
@@ -199,11 +206,7 @@ public class ServerService {
 		LOG.info(">>>>>>>port {} is listening:{}", healthRestPortNum, listening);
 		if (listening) {
 			killProcess(healthRestPortNum);
-			// check 
-			listening = checkPortListening(healthRestPortNum);
-			if (listening) {
-				throw new Exception("Port:" + healthRestPortNum + " cannot be killed.!!!");
-			}
+		
 		}
 
 		// kill process of kafka-rest
@@ -211,12 +214,31 @@ public class ServerService {
 		LOG.info(">>>>>>>port {} is listening:{}", partycontactRestPortNum, listening);
 		if (listening) {
 			killProcess(partycontactRestPortNum);
-			// check 
-			listening = checkPortListening(partycontactRestPortNum);
-			if (listening) {
-				throw new Exception("Port:" + partycontactRestPortNum + " cannot be killed.!!!");
-			}
+			
 		}
+	}
+	private void executeCommand(String directory, String script) throws Exception {
+		LOG.info(">>> executeSCommand script={}", script);
+		
+		ProcessBuilder builder = new ProcessBuilder();
+	
+		builder.command(script);
+		builder.directory(new File(directory));
+
+		Process process = builder.start();
+
+		int exitVal = process.waitFor();
+		if (exitVal == 0) {
+			LOG.info(">>>   Success!!! ");
+		} else {
+			LOG.error(">>>   Error!!!  exitcode={}",exitVal);
+
+		}
+		
+		if (process.isAlive()) {
+			process.destroy();
+		}
+
 	}
 	private void killProcess(int port) throws Exception {
 		ProcessBuilder builder = new ProcessBuilder();
@@ -234,6 +256,10 @@ public class ServerService {
 		} else {
 			LOG.error(">>> Kill Port:{}  Error!!!  exitcode={}", port, exitVal);
 
+		}
+		while (checkPortListening(port)) {
+			Thread.sleep(1000);
+			LOG.info(">>>> Sleep for 1 second");;
 		}
 		if (killProcess.isAlive()) {
 			killProcess.destroy();
@@ -283,8 +309,148 @@ public class ServerService {
 		} finally {
 			if (reader != null) reader.close();
 		}
+	}
+	public void startRestartCheck() throws Exception {
+		LOG.info(">>>>>>>>>>>> startRestartCheck...");
 
+		scheduledRestartingCheckExecutor = Executors.newScheduledThreadPool(1);
+
+		Runnable checkRestarting = () -> {
+			Connection conn = null;
+			CallableStatement cstmt = null;
+
+			try {	
+				String response = HttpUtils.restService(serverRestartCheckUrl, "GET");
+				ObjectMapper objectMapper = new ObjectMapper();
+				
+				JsonNode jsonNode = objectMapper.readTree(response);
+				boolean restart = jsonNode.get("restart").asBoolean();
+
+				LOG.info("restart={}", restart);
+				
+				long t0, t1;
+				String script = null;
+				if (restart) {
+					LOG.info("execute STOP scripts ...");
+					
+					t0 = System.currentTimeMillis();
+					script = "./shutdown-partycontact.sh";
+					executeCommand("bin", script);
+					t1 = System.currentTimeMillis();
+					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+					
+					Thread.sleep(5000);
+					
+					t0 = System.currentTimeMillis();
+					script = "./shutdown-base.sh";
+					executeCommand("bin", script);
+					t1 = System.currentTimeMillis();
+					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+					
+					LOG.info("execute START scripts ...");
+					
+					t0 = System.currentTimeMillis();
+					script = "./start-kafka.sh";
+					executeCommand("bin", script);
+					t1 = System.currentTimeMillis();
+					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+					
+					Thread.sleep(15000);
+					
+					t0 = System.currentTimeMillis();
+					script = "./startup-base.sh";
+					executeCommand("bin", script);
+					t1 = System.currentTimeMillis();
+					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+					
+					Thread.sleep(5000);
+					
+					t0 = System.currentTimeMillis();
+					script = "./cleanup-and-initialization-partycontact.sh";
+					executeCommand("bin", script);
+					t1 = System.currentTimeMillis();
+					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+					
+					Thread.sleep(5000);
+					
+					t0 = System.currentTimeMillis();
+					script = "./startup-partycontact-base.sh";
+					executeCommand("bin", script);
+					t1 = System.currentTimeMillis();
+					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+					
+					Thread.sleep(5000);
+					
+					t0 = System.currentTimeMillis();
+					script = "./startup-partycontact-loaddata.sh";
+					executeCommand("bin", script);
+					t1 = System.currentTimeMillis();
+					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+					
+					Thread.sleep(5000);
+					
+					t0 = System.currentTimeMillis();
+					script = "./startup-partycontact-consumer.sh";
+					executeCommand("bin", script);
+					t1 = System.currentTimeMillis();
+					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+					
+					Thread.sleep(5000);
+					
+					
+				}
+
+			} catch (Exception e1) {
+				String errMsg = ExceptionUtils.getMessage(e1);
+				String stackTrace = ExceptionUtils.getStackTrace(e1);
+				LOG.error(">>> err msg:{}, stacktrace={}", errMsg, stackTrace);
+			} finally {
+				if (cstmt != null)
+					try {
+						cstmt.close();
+					} catch (SQLException e1) {
+						String errMsg = ExceptionUtils.getMessage(e1);
+						String stackTrace = ExceptionUtils.getStackTrace(e1);
+						LOG.error(">>> err msg:{}, stacktrace={}", errMsg, stackTrace);
+					}
+				if (conn != null)
+					try {
+						conn.close();
+					} catch (SQLException e) {
+						String errMsg = ExceptionUtils.getMessage(e);
+						String stackTrace = ExceptionUtils.getStackTrace(e);
+						LOG.error(">>> err msg:{}, stacktrace={}", errMsg, stackTrace);
+					}
+			}	
+
+		};
+		// initial delay = 5, repeat the task every 60 seconds
+		scheduledRestartingCheck = scheduledRestartingCheckExecutor.scheduleAtFixedRate(checkRestarting, 10, 60, TimeUnit.SECONDS);
+
+
+		//		Runtime.getRuntime().addShutdownHook(new Thread() {
+		//			@Override
+		//			public void run() {
+		//
+		//				stopHeartbeat();
+		//
+		//			}
+		//		});
+		//
+		//		return result;
 
 
 	}
+	public void stopRestartCheck() {
+		LOG.info(">>>>>>>>>>>> stopRestartCheck ");
+
+		scheduledRestartingCheck.cancel(true);
+
+		scheduledRestartingCheckExecutor.shutdown();
+
+
+		LOG.info(">>>>>>>>>>>> stopRestartCheck done !!!");
+
+	}
+	
 }
