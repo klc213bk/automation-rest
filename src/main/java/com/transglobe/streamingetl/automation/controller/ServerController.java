@@ -147,4 +147,52 @@ public class ServerController {
 		
 		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
 	}
+	@PostMapping(path="/startHouseKeeping", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> startHouseKeeping() {
+		LOG.info(">>>>controller startHouseKeeping is called");
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			serverService.startHouseKeeping();
+			objectNode.put("returnCode", "0000");
+			
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stacktrace={}",errMsg,stackTrace);
+		}
+		
+		LOG.info(">>>>controller startHouseKeeping finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	@PostMapping(path="/stopHouseKeeping", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> stopHouseKeeping() {
+		LOG.info(">>>>controller stopHouseKeeping is called");
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			serverService.stopHouseKeeping();
+			objectNode.put("returnCode", "0000");
+			
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stacktrace={}",errMsg,stackTrace);
+		}
+		
+		LOG.info(">>>>controller stopHouseKeeping finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
 }
