@@ -16,15 +16,15 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.transglobe.streamingetl.automation.service.ServerService;
+import com.transglobe.streamingetl.automation.service.AutomationService;
 
 @RestController
 @RequestMapping("/server")
-public class ServerController {
-	static final Logger LOG = LoggerFactory.getLogger(ServerController.class);
+public class AutomationController {
+	static final Logger LOG = LoggerFactory.getLogger(AutomationController.class);
 
 	@Autowired
-	private ServerService serverService;
+	private AutomationService serverService;
 	
 	@Autowired
 	private ObjectMapper mapper;

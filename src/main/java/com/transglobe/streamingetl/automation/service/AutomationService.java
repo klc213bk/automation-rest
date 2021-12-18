@@ -14,6 +14,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -35,25 +38,30 @@ import org.springframework.stereotype.Service;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.transglobe.streamingetl.automation.bean.TmSysStatusHist;
 import com.transglobe.streamingetl.automation.util.HttpUtils;
 
 
 @Service
-public class ServerService {
-	static final Logger LOG = LoggerFactory.getLogger(ServerService.class);
+public class AutomationService {
+	static final Logger LOG = LoggerFactory.getLogger(AutomationService.class);
+
+	private static String KAFKA_STATUS_RUNNING = "RUNNING";
+	private static String LOGMINER_STATUS_RUNNING = "RUNNING";
+	private static String CONNECT_STATUS_RUNNING = "RUNNING";
 
 	@Value("${tglminer.db.driver}")
 	private String tglminerDbDriver;
 
 	@Value("${tglminer.db.url}")
 	private String tglminerDbUrl;
-	
+
 	@Value("${tglminer.db.username}")
 	private String tglminerDbUsername;
-	
+
 	@Value("${tglminer.db.password}")
 	private String tglminerDbPassword;
-	
+
 	@Value("${kafka.rest.home}")
 	private String kafkaRestHome;
 
@@ -62,6 +70,12 @@ public class ServerService {
 
 	@Value("${kafka.rest.port}")
 	private String kafkaRestPort;
+
+	@Value("${kafka.bootstrap.server.port}")
+	private String kafkaBootstrapServerPort;
+
+	@Value("${kafka.zookeeper.server.port}")
+	private String kafkaZookeeperServerPort;
 
 	@Value("${logminer.rest.home}")
 	private String logminerRestHome;
@@ -90,22 +104,27 @@ public class ServerService {
 	@Value("${partycontact.rest.port}")
 	private String partycontactRestPort;
 
-	@Value("${sever.restart.check.url}")
-	private String serverRestartCheckUrl;
-
 	@Value("${data.log.dirs}")
 	private String dataLogDirs;
 
 	@Value("${house.keeping.days}")
 	private String houseKeepingDaysStr;
-	
+
+	@Value("${restart.allowance.period.bizhour}")
+	private String restartAllowancePeriodBizhour;
+
+	@Value("${restart.consumer.allowance.period.bizhour}")
+	private String restartConsumerAllowancePeriodBizhour;
+
 	private ScheduledExecutorService scheduledRestartingCheckExecutor;
 	private ScheduledFuture<?> scheduledRestartingCheck;
 
 	private ScheduledExecutorService scheduledHouseKeepingExecutor;
 	private ScheduledFuture<?> scheduledHouseKeeping;
-	
+
 	private AtomicBoolean restarting = new AtomicBoolean(false);
+
+	private int restartingPhase = 0; // 1, 2
 
 	public void startRestServer(String restServer) throws Exception {
 		int kafkaRestPortNum = Integer.valueOf(kafkaRestPort);
@@ -173,8 +192,6 @@ public class ServerService {
 
 			builder.directory(new File(path));
 			Process startRestServerProcess = builder.start();
-
-			AtomicBoolean running = new AtomicBoolean(false);
 
 			//			ExecutorService kafkaStartExecutor = Executors.newSingleThreadExecutor();
 			//			kafkaStartExecutor.submit(new Runnable() {
@@ -347,90 +364,265 @@ public class ServerService {
 
 		Runnable checkRestarting = () -> {
 			Connection conn = null;
-			CallableStatement cstmt = null;
-
+			PreparedStatement pstmt = null;
+			String sql = null;
+			ResultSet rs = null;
 			try {	
+
+				if (restarting.get()) {
+					return;
+				}
+
 				restarting.set(true);
+
+				Class.forName(tglminerDbDriver);
+				conn = DriverManager.getConnection(tglminerDbUrl, tglminerDbUsername, tglminerDbPassword);
+
+
+				sql = "select INSERT_TIME,LGMNR_LST_RCVD_HEARTBEAT_TIME,\n" + 
+						"	LGMNR_LST_RCVD,CNSMR_LST_RCVD_HEARTBEAT_TIME,\n" + 
+						"	CNSMR_LST_RCVD,CNSMR_LST_RCVD_CLIENT,\n" + 
+						"	KAFKA_STATUS,LOGMINER_STATUS,CONNECT_STATUS \n" +
+						" from TM_SYS_STATUS_HIST \n" +
+						" order by INSERT_TIME DESC fetch next 1 row only";
+				pstmt = conn.prepareStatement(sql);
+				rs = pstmt.executeQuery();
+				TmSysStatusHist tmSysStatusHist = null;
+				while (rs.next()) {
+					tmSysStatusHist = new TmSysStatusHist();
+					tmSysStatusHist.setInsertTime(rs.getTimestamp("INSERT_TIME"));
+					tmSysStatusHist.setLgmnrLstRcvdHeartbeatTime(rs.getTimestamp("LGMNR_LST_RCVD_HEARTBEAT_TIME"));
+					tmSysStatusHist.setLgmnrLstRcvd(rs.getTimestamp("LGMNR_LST_RCVD"));
+					tmSysStatusHist.setCnsmrLstRcvdHeartbeatTime(rs.getTimestamp("CNSMR_LST_RCVD_HEARTBEAT_TIME"));
+					tmSysStatusHist.setCnsmrLstRcvd(rs.getTimestamp("CNSMR_LST_RCVD"));
+					tmSysStatusHist.setCnsmrLstRcvdClient(rs.getString("CNSMR_LST_RCVD_CLIENT"));
+					tmSysStatusHist.setKafkaStatus(rs.getString("KAFKA_STATUS"));
+					tmSysStatusHist.setLogminerStatus(rs.getString("LOGMINER_STATUS"));
+					tmSysStatusHist.setConnectStatus(rs.getString("CONNECT_STATUS"));
+				}
+				rs.close();
+				pstmt.close();
+
+				LOG.info("tmSysStatusHist={}", ToStringBuilder.reflectionToString(tmSysStatusHist));
+
+				boolean restart = checkRestart(tmSysStatusHist);
+
+				LOG.info("need to restart={}", restart);
+
+				int kafkaRestPortNum = Integer.valueOf(kafkaRestPort);
+				int logminerRestPortNum = Integer.valueOf(logminerRestPort);
+				int healthRestPortNum = Integer.valueOf(healthRestPort);
+				int partycontactRestPortNum = Integer.valueOf(partycontactRestPort);
+				int kafkaBootstrapServerPortNum = Integer.valueOf(kafkaBootstrapServerPort);
+				int kafkaZookeeperServerPortNum = Integer.valueOf(kafkaZookeeperServerPort);
+
 				
-				String response = HttpUtils.restService(serverRestartCheckUrl, "GET");
-				ObjectMapper objectMapper = new ObjectMapper();
-
-				JsonNode jsonNode = objectMapper.readTree(response);
-				boolean restart = jsonNode.get("restart").asBoolean();
-
-				LOG.info("restart={}", restart);
-
 				long t0, t1;
 				String script = null;
+				String	response = null;
 				if (restart) {
-					LOG.info("execute STOP scripts ...");
-
-					t0 = System.currentTimeMillis();
-					script = "./shutdown-partycontact.sh";
-					executeCommand("bin", script);
-					t1 = System.currentTimeMillis();
-					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
-
-					Thread.sleep(5000);
-
-					t0 = System.currentTimeMillis();
-					script = "./shutdown-base.sh";
-					executeCommand("bin", script);
-					t1 = System.currentTimeMillis();
-					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
-
-					Thread.sleep(15000);
 					
-					LOG.info("execute START scripts ...");
+					LOG.info("restartingPhase={}", restartingPhase);
+					if (restartingPhase == 0) {
+						LOG.info("execute STOP scripts ...");
 
-					t0 = System.currentTimeMillis();
-					script = "./start-kafka.sh";
-					executeCommand("bin", script);
-					t1 = System.currentTimeMillis();
-					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+						if (checkPortListening(partycontactRestPortNum)) {
+							t0 = System.currentTimeMillis();
 
-					Thread.sleep(15000);
+							script = "./shutdown-partycontact.sh";
+							executeCommand("bin", script);
+							t1 = System.currentTimeMillis();
+							LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
 
-					t0 = System.currentTimeMillis();
-					script = "./startup-base.sh";
-					executeCommand("bin", script);
-					t1 = System.currentTimeMillis();
-					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+							Thread.sleep(5000);
+						}
+						if (checkPortListening(healthRestPortNum)) {
+							t0 = System.currentTimeMillis();
 
-					Thread.sleep(5000);
+							script = "./shutdown-health.sh";
+							executeCommand("bin", script);
+							t1 = System.currentTimeMillis();
+							LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
 
-					t0 = System.currentTimeMillis();
-					script = "./cleanup-and-initialization-partycontact.sh";
-					executeCommand("bin", script);
-					t1 = System.currentTimeMillis();
-					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+							Thread.sleep(5000);
+						}
+						if (checkPortListening(logminerRestPortNum)) {
+							t0 = System.currentTimeMillis();
 
-					Thread.sleep(5000);
+							script = "./shutdown-logminer.sh";
+							executeCommand("bin", script);
+							t1 = System.currentTimeMillis();
+							LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
 
-					t0 = System.currentTimeMillis();
-					script = "./startup-partycontact-base.sh";
-					executeCommand("bin", script);
-					t1 = System.currentTimeMillis();
-					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+							Thread.sleep(5000);
+						}
+						if (checkPortListening(kafkaRestPortNum)) {
+							t0 = System.currentTimeMillis();
+							script = "./shutdown-kafka.sh";
+							executeCommand("bin", script);
+							t1 = System.currentTimeMillis();
+							LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
 
-					Thread.sleep(5000);
+							Thread.sleep(15000);
+						}
+						LOG.info("execute START scripts ...");
 
-					t0 = System.currentTimeMillis();
-					script = "./startup-partycontact-loaddata.sh";
-					executeCommand("bin", script);
-					t1 = System.currentTimeMillis();
-					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+						if (!checkPortListening(kafkaRestPortNum)) {
+							t0 = System.currentTimeMillis();
+							script = "./startup-kafka.sh";
+							executeCommand("bin", script);
+							t1 = System.currentTimeMillis();
+							LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
 
-					Thread.sleep(5000);
+							Thread.sleep(15000);
+							
+							if (!checkPortListening(kafkaZookeeperServerPortNum)
+									|| !checkPortListening(kafkaBootstrapServerPortNum)) {
+								// shutdown and restart kafka again
+								t0 = System.currentTimeMillis();
+								script = "./shutdown-kafka.sh";
+								executeCommand("bin", script);
+								t1 = System.currentTimeMillis();
+								LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
 
-					t0 = System.currentTimeMillis();
-					script = "./startup-partycontact-consumer.sh";
-					executeCommand("bin", script);
-					t1 = System.currentTimeMillis();
-					LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+								Thread.sleep(20000);
+								
+								t0 = System.currentTimeMillis();
+								script = "./startup-kafka.sh";
+								executeCommand("bin", script);
+								t1 = System.currentTimeMillis();
+								LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
 
-					Thread.sleep(5000);
+								Thread.sleep(15000);
+								
+							}
 
+						}
+						if (!checkPortListening(logminerRestPortNum)) {
+							t0 = System.currentTimeMillis();
+							script = "./startup-logminer-with-reset.sh";
+							executeCommand("bin", script);
+							t1 = System.currentTimeMillis();
+							LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+
+							Thread.sleep(15000);
+						}
+						if (!checkPortListening(healthRestPortNum)) {
+							t0 = System.currentTimeMillis();
+							script = "./startup-health.sh";
+							executeCommand("bin", script);
+							t1 = System.currentTimeMillis();
+							LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+
+							Thread.sleep(15000);
+						}
+
+						restartingPhase = 1;
+						LOG.info(">>> set restartingPhase={}", restartingPhase);
+					} else if (restartingPhase == 1) {
+						LOG.warn(">>> restart pahase 1 failed. reset restartingPhase = 0 and will restart at next cycle");
+						restartingPhase = 0;
+						LOG.info(">>> set restartingPhase={}", restartingPhase);
+					} else if (restartingPhase == 2) {
+						LOG.warn(">>> restart pahase 2 failed. reset restartingPhase = 0 and will restart at next cycle");
+						restartingPhase = 0;
+						LOG.info(">>> set restartingPhase={}", restartingPhase);
+					}
+				} else {
+					if (restartingPhase == 0) {
+						LOG.info("This is a normal case ");
+					} else if (restartingPhase == 1) {
+						LOG.warn(">>> restart pahase 1 successfully. go restart phase 2 ");
+
+						//						t0 = System.currentTimeMillis();
+						//						script = "./cleanup-and-initialization-partycontact.sh";
+						//						executeCommand("bin", script);
+						//						t1 = System.currentTimeMillis();
+						//						LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+						//
+						//						Thread.sleep(5000);
+						//
+						//						t0 = System.currentTimeMillis();
+						//						script = "./startup-partycontact-loaddata.sh";
+						//						executeCommand("bin", script);
+						//						t1 = System.currentTimeMillis();
+						//						LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+						//
+						//						Thread.sleep(5000);
+
+						if (!checkPortListening(partycontactRestPortNum)) {
+							t0 = System.currentTimeMillis();
+							response =  HttpUtils.restService("http://localhost:9100/server/start/partycontact-rest", "POST");
+							t1 = System.currentTimeMillis();
+							LOG.info(">>> cleanup Done !!! take {} ms!!!, response={}" , (t1 - t0), response);
+
+							Thread.sleep(10000);
+						}
+						
+						t0 = System.currentTimeMillis();
+						response =  HttpUtils.restService("http://localhost:9201/partycontact/cleanup", "POST");
+						t1 = System.currentTimeMillis();
+						LOG.info(">>> cleanup Done !!! take {} ms!!!, response={}" , (t1 - t0), response);
+
+						Thread.sleep(5000);
+
+						t0 = System.currentTimeMillis();
+						response =  HttpUtils.restService("http://localhost:9201/partycontact/initialize", "POST");
+						t1 = System.currentTimeMillis();
+						LOG.info(">>> initialize Done !!! take {} ms!!! , response={}" , (t1 - t0), response);
+
+						Thread.sleep(5000);
+
+						t0 = System.currentTimeMillis();
+						response =  HttpUtils.restService("http://localhost:9201/partycontact/applyLogminerSync", "POST");
+						t1 = System.currentTimeMillis();
+						LOG.info(">>> applyLogminerSync Done !!! take {} ms!!!, response={}" , (t1 - t0), response);
+
+						Thread.sleep(5000);
+
+						t0 = System.currentTimeMillis();
+						response =  HttpUtils.restService("http://localhost:9201/partycontact/loadAllData", "POST");
+						t1 = System.currentTimeMillis();
+						LOG.info(">>> loadAllData Done !!! take {} ms!!!, response={}" , (t1 - t0), response);
+
+						Thread.sleep(5000);
+
+						t0 = System.currentTimeMillis();
+						response =  HttpUtils.restService("http://localhost:9201/partycontact/addPrimaryKey", "POST");
+						t1 = System.currentTimeMillis();
+						LOG.info(">>> addPrimaryKey Done !!! take {} ms!!!, response={}" , (t1 - t0), response);
+
+						Thread.sleep(5000);
+
+						t0 = System.currentTimeMillis();
+						response =  HttpUtils.restService("http://localhost:9201/partycontact/createIndexes", "POST");
+						t1 = System.currentTimeMillis();
+						LOG.info(">>> createIndexes Done !!! take {} ms!!!, response={}" , (t1 - t0), response);
+
+						Thread.sleep(5000);
+
+						t0 = System.currentTimeMillis();
+						response =  HttpUtils.restService("http://localhost:9201/consumer/startPartyContactConsumer", "POST");
+						t1 = System.currentTimeMillis();
+						LOG.info(">>> startPartyContactConsumer Done !!! take {} ms!!!, response={}" , (t1 - t0), response);
+
+
+
+						//						t0 = System.currentTimeMillis();
+						//						script = "./startup-partycontact-consumer.sh";
+						//						executeCommand("bin", script);
+						//						t1 = System.currentTimeMillis();
+						//						LOG.info("executeCommand '{}' Done, take {} ms!!!" , script, (t1 - t0));
+
+						Thread.sleep(10000);
+
+						restartingPhase = 2;
+					} else if (restartingPhase == 2) {
+						LOG.info(">>> restart pahase 2 successfully. Whole restarting process succeeds. reset restartingPhase = 0 ");
+						restartingPhase = 0;
+					} else {
+						LOG.error(">>> Cannot goes here, error!!! restartingPhase={}", restartingPhase);
+					}
 
 				}
 
@@ -439,9 +631,9 @@ public class ServerService {
 				String stackTrace = ExceptionUtils.getStackTrace(e1);
 				LOG.error(">>> err msg:{}, stacktrace={}", errMsg, stackTrace);
 			} finally {
-				if (cstmt != null) {
+				if (pstmt != null) {
 					try {
-						cstmt.close();
+						pstmt.close();
 					} catch (SQLException e1) {
 						String errMsg = ExceptionUtils.getMessage(e1);
 						String stackTrace = ExceptionUtils.getStackTrace(e1);
@@ -495,7 +687,7 @@ public class ServerService {
 		scheduledHouseKeepingExecutor = Executors.newScheduledThreadPool(1);
 
 		final int houseKeepingDays = Integer.valueOf(houseKeepingDaysStr);
-		
+
 		Runnable houseKeepingTask = () -> {
 
 			Connection conn = null;
@@ -512,23 +704,23 @@ public class ServerService {
 
 					File[] files = dir.listFiles();
 					if (files != null) {
-//						System.out.println(logDir + ", length:" + files.length); 
+						//						System.out.println(logDir + ", length:" + files.length); 
 						for (File file : files) {
 							matcher = datePattern.matcher(file.getName());
 							while (matcher.find()) {
-//								System.out.println(file.getName() + ",macther.group:" + matcher.group());	
+								//								System.out.println(file.getName() + ",macther.group:" + matcher.group());	
 								LocalDate filedate = LocalDate.parse(matcher.group());
-//								System.out.println("filedate:" + filedate);
+								//								System.out.println("filedate:" + filedate);
 
 								LocalDate now = LocalDate.now();
 
 								LocalDate oneWeekBefore = now.minusDays(houseKeepingDays);
-//								System.out.println("oneWeekBefore:" + oneWeekBefore);
+								//								System.out.println("oneWeekBefore:" + oneWeekBefore);
 
 								if (filedate.isBefore(oneWeekBefore)) {
 									Files.delete(Paths.get(file.getAbsolutePath()));
 									LOG.info("file:{} deleted" ,file.getName());
-									
+
 								}
 							}
 
@@ -543,33 +735,39 @@ public class ServerService {
 				LocalDate now = LocalDate.now();
 				LocalDate theDate = now.minusDays(houseKeepingDays);
 				Timestamp theTimestamp = Timestamp.valueOf(theDate.atStartOfDay());
-				
+
 				sql = "delete from TM_HEARTBEAT where HEARTBEAT_TIME < ?";
 				pstmt = conn.prepareStatement(sql);
 				pstmt.setTimestamp(1, theTimestamp);
 				pstmt.executeUpdate();
 				pstmt.close();
-				
+
 				sql = "delete from TM_HEALTH where HEARTBEAT_TIME < ?";
 				pstmt = conn.prepareStatement(sql);
 				pstmt.setTimestamp(1, theTimestamp);
 				pstmt.executeUpdate();
 				pstmt.close();
-				
-				sql = "delete from TM_HEALTH where START_TIME < ?";
+
+				sql = "delete from TM_LOGMINER_OFFSET where START_TIME < ?";
 				pstmt = conn.prepareStatement(sql);
 				pstmt.setTimestamp(1, theTimestamp);
 				pstmt.executeUpdate();
 				pstmt.close();
-				
+
 				sql = "delete from TM_PAYLOAD_LOG where INSERT_TIME < ?";
 				pstmt = conn.prepareStatement(sql);
 				pstmt.setTimestamp(1, theTimestamp);
 				pstmt.executeUpdate();
 				pstmt.close();
-				
+
+				sql = "delete from TM_SYS_STATUS_HIST where INSERT_TIME < ?";
+				pstmt = conn.prepareStatement(sql);
+				pstmt.setTimestamp(1, theTimestamp);
+				pstmt.executeUpdate();
+				pstmt.close();
+
 				conn.close();
-				
+
 			} catch (Exception e1) {
 				LOG.error(">>> err msg:{}, stacktrace={}", ExceptionUtils.getMessage(e1), ExceptionUtils.getStackTrace(e1));
 			} finally {
@@ -618,5 +816,80 @@ public class ServerService {
 
 		LOG.info(">>>>>>>>>>>> stopHouseKeeping done !!!");
 
+	}
+	private boolean checkRestart(TmSysStatusHist tmSysStatusHist) throws Exception {
+		LOG.info(">>>>>>>>>>>> checkRestart ...");
+
+		boolean restarting = false;
+		if (tmSysStatusHist == null || tmSysStatusHist.getLgmnrLstRcvd() == null) {
+			restarting = false;
+		} else {
+			Timestamp lgmnrLastReceived = tmSysStatusHist.getLgmnrLstRcvd();
+			long lastReceivedMs = lgmnrLastReceived.getTime();
+			long nowms = System.currentTimeMillis();
+			LOG.info(">>>nowms - lastReceivedMs = {}", nowms - lastReceivedMs);
+
+			if (KAFKA_STATUS_RUNNING.equals(tmSysStatusHist.getKafkaStatus())
+					&& LOGMINER_STATUS_RUNNING.equals(tmSysStatusHist.getLogminerStatus())
+					&& CONNECT_STATUS_RUNNING.equals(tmSysStatusHist.getConnectStatus())) {
+				LOG.info(">>>servers are all RUNNING OK");
+				int thresholdCosumer = Integer.valueOf(restartConsumerAllowancePeriodBizhour);
+
+
+				LocalDateTime localDateTime = LocalDateTime.now();
+				int hour = localDateTime.getHour();
+
+				if (nowms - lastReceivedMs > thresholdCosumer * 1000 ) {
+					LOG.info(">>>server ok, now - lastReceivedMs {} > {} seconds", nowms - lastReceivedMs, thresholdCosumer);
+
+					if (hour >= 8 && hour < 20) {
+						LOG.info(">>>server ok, now - lastReceivedMs {} > {} seconds, business hour, restarting=true", nowms - lastReceivedMs, thresholdCosumer);
+						restarting = true;
+					} else {
+						LOG.info(">>>server ok, now - lastReceivedMs {} > {} seconds, non business hour", nowms - lastReceivedMs, thresholdCosumer);
+						if (hour == 7 ) {
+							LOG.info(">>> 7 oclock set restarting = true");
+							restarting = true;
+						} else {
+							LOG.info(">>> non business hour set restarting = false");
+							restarting = false;
+						}
+					}
+				} else {
+					restarting = false;
+					LOG.info(">>>serverok, dnowms - lastReceivedMs {} < threshold, do nothing, keep waiting , threshold: {} seconds", nowms - lastReceivedMs, thresholdCosumer);
+				}
+			} else {
+				LOG.info(">>>servers have Failure!!!");
+				LocalDateTime localDateTime = LocalDateTime.now();
+				int hour = localDateTime.getHour();
+
+				if (hour >= 8 && hour < 20) {
+					// business hour
+					int thresholdServer = Integer.valueOf(restartAllowancePeriodBizhour);
+					if (nowms - lastReceivedMs > thresholdServer * 1000 ) {
+						LOG.info(">>>Although server fails, set restarting = true, > threshold:{}, keep waiting for {} seconds", nowms - lastReceivedMs, thresholdServer);
+						restarting = true;
+					} else {
+						restarting = false;
+						LOG.info(">>>Although server fails, do nothing, less than threshold:{}, keep waiting for {} seconds", nowms - lastReceivedMs, thresholdServer);
+					}
+				} else {
+					if (hour == 7 ) {
+						LOG.info(">>> hour={}, = 7 oclock hour oclock set restarting = true", hour);
+						restarting = true;
+					} else if (hour == 20 || hour == 23 || hour == 2 || hour == 5) {
+						LOG.info(">>> hour={}, != 7 oclock, restart hour set restarting = true", hour);
+						restarting = true;
+					} else {
+						LOG.info(">>> hour={}, != 7 oclock, not restart hour set restarting = false", hour);
+						restarting = false;
+					}
+
+				}
+			}
+		}
+
+		return restarting;
 	}
 }

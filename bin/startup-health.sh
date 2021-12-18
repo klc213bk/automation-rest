@@ -3,15 +3,6 @@
 set -e
 
 
-echo ">>>>>>>>>> STARTING LOGMINER CONNECTOR SERVICE"
-
-curl -X POST http://localhost:9100/server/start/logminer-rest
-echo ">>> [OK] START LOGMINER-REST SERVER"
-
-curl -X POST http://localhost:9102/logminer/startConnector/reset
-echo "         [OK] START LOGMINER CONNECT W/ RESET"
-
-
 echo ">>>>>>>>>> STARTING HEALTH SERVICE"
 
 curl -X POST http://localhost:9100/server/start/health-rest
@@ -33,6 +24,6 @@ curl -X POST http://localhost:9103/health/startConsumerCheck
 echo "         [OK] START CONSUMER CHECK"
 
 
-echo " [OK] STARTUP-BASE PROCESS FINISHED."
+echo " [OK] STARTUP-HEALTH PROCESS FINISHED."
 
 
